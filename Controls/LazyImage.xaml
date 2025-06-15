@@ -1,0 +1,57 @@
+﻿<UserControl x:Class="PhotoGallery.Controls.LazyImage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" 
+             >   <!-- safety -->
+
+    <Border x:Name="Container" Background="Black" Width="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=UserControl}}">
+        
+        <Grid>
+            <Rectangle Fill="Transparent"
+           MouseLeftButtonDown="ImageOrVideo_Click" />
+            <Viewbox Stretch="Fill">
+                <Grid Width="100" Height="100">
+                    <!-- Base square thumbnail size -->
+                    <!-- Media Preview -->
+                    <MediaElement x:Name="LazyVideo"
+                              LoadedBehavior="Manual"
+                              UnloadedBehavior="Manual"
+                              Visibility="Collapsed"
+                              Stretch="UniformToFill"
+                              MediaEnded="LazyVideo_MediaEnded"/>
+
+                    <!-- Static Thumbnail -->
+                    <Image x:Name="LazyLoadedImage"
+                       Stretch="UniformToFill"
+                       Visibility="Collapsed"
+                       />
+
+                    <!-- Play icon overlay -->
+                    <TextBlock x:Name="PlayOverlay"
+                           Text="▶"
+                           FontSize="36"
+                           Foreground="White"
+                           Background="#66000000"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Visibility="Collapsed"
+                           MouseLeftButtonDown="ImageOrVideo_Click"/>
+
+                    <!-- Placeholder -->
+                    <TextBlock x:Name="PlaceholderText"
+                           Text="Loading..."
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+
+                    <!-- Info text -->
+                    <TextBlock x:Name="ImageNameText"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Bottom"
+                           Background="Gray"
+                           FontSize="10"
+                           Margin="0,5,0,0"/>
+                </Grid>
+            </Viewbox>
+        </Grid>
+    </Border>
+
+</UserControl>
