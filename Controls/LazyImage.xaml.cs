@@ -12,7 +12,10 @@ namespace PhotoGallery.Controls
     {
         private DispatcherTimer? _pollTimer;
         private int _attemptCount;
-        private const int MaxAttempts = 20; // Prevent infinite polling
+        private const int MaxAttempts = 10; // Reduced from 20 to limit database calls
+        private const int PollingIntervalMs = 1000; // Increased from 500ms to reduce frequency
+        private bool _isLoaded = false;
+        private CancellationTokenSource? _loadCancellation;
 
         public static readonly DependencyProperty FilePathProperty = DependencyProperty.Register(
             nameof(FilePath),
@@ -45,12 +48,14 @@ namespace PhotoGallery.Controls
 
         private void OnControlLoaded(object sender, RoutedEventArgs e)
         {
+            _isLoaded = true;
             ImageNameText.Text = Path.GetFileName(FilePath);
             StartPolling(FilePath);
         }
 
         private void OnControlUnloaded(object sender, RoutedEventArgs e)
         {
+            _isLoaded = false;
             StopPolling();
         }
 
@@ -72,11 +77,14 @@ namespace PhotoGallery.Controls
 
             _attemptCount = 0;
 
+            // FIXED: Reduced polling frequency and added immediate check
+            _ = CheckDbForThumbnailAsync(path); // Immediate check
+
             _pollTimer = new DispatcherTimer(DispatcherPriority.Background)
             {
-                Interval = TimeSpan.FromMilliseconds(500) // Slightly longer interval
+                Interval = TimeSpan.FromMilliseconds(PollingIntervalMs)
             };
-            _pollTimer.Tick += (s, ev) => CheckDbForThumbnail(path);
+            _pollTimer.Tick += async (s, ev) => await CheckDbForThumbnailAsync(path);
             _pollTimer.Start();
         }
 
@@ -87,10 +95,15 @@ namespace PhotoGallery.Controls
                 _pollTimer.Stop();
                 _pollTimer = null;
             }
+
+            _loadCancellation?.Cancel();
+            _loadCancellation = null;
         }
 
         private void SetPlaceholderMode(string message)
         {
+            if (!_isLoaded) return;
+
             PlaceholderText.Visibility = Visibility.Visible;
             PlaceholderText.Text = message;
             LazyLoadedImage.Visibility = Visibility.Collapsed;
@@ -98,8 +111,11 @@ namespace PhotoGallery.Controls
             PlayOverlay.Visibility = Visibility.Collapsed;
         }
 
-        private void CheckDbForThumbnail(string path)
+        // FIXED: Made async to prevent UI blocking
+        private async Task CheckDbForThumbnailAsync(string path)
         {
+            if (!_isLoaded) return;
+
             _attemptCount++;
 
             // Stop polling after max attempts to prevent infinite loops
@@ -110,28 +126,73 @@ namespace PhotoGallery.Controls
                 return;
             }
 
-            var meta = PhotoDb.GetPhoto(path);
-            if (meta?.ThumbnailBlob == null || meta.ThumbnailBlob.Length == 0)
-                return;
-
-            bool isVideo = Helper.KnownVideoExtensions.Contains(Path.GetExtension(path));
-
-            BitmapImage? bmp = LoadThumbnailSafely(meta.ThumbnailBlob);
-            if (bmp == null)
+            try
             {
-                SetPlaceholderMode("Invalid thumbnail");
-                StopPolling();
-                return;
-            }
+                // Cancel any previous load operation
+                _loadCancellation?.Cancel();
+                _loadCancellation = new CancellationTokenSource();
 
-            // Update UI
+                // FIXED: Load metadata on background thread to avoid blocking UI
+                var meta = await Task.Run(() => PhotoDb.GetPhoto(path), _loadCancellation.Token);
+
+                if (_loadCancellation.Token.IsCancellationRequested)
+                    return;
+
+                if (meta?.ThumbnailBlob == null || meta.ThumbnailBlob.Length == 0)
+                    return;
+
+                bool isVideo = Helper.KnownVideoExtensions.Contains(Path.GetExtension(path));
+
+                // FIXED: Load bitmap on background thread
+                BitmapImage? bmp = await LoadThumbnailSafelyAsync(meta.ThumbnailBlob);
+
+                if (_loadCancellation.Token.IsCancellationRequested)
+                    return;
+
+                if (bmp == null)
+                {
+                    SetPlaceholderMode("Invalid thumbnail");
+                    StopPolling();
+                    return;
+                }
+
+                // FIXED: Build info text on background thread
+                string info = await Task.Run(() => BuildInfoText(path, meta), _loadCancellation.Token);
+
+                if (_loadCancellation.Token.IsCancellationRequested)
+                    return;
+
+                // Update UI on UI thread
+                if (Dispatcher.CheckAccess())
+                {
+                    UpdateUI(bmp, isVideo, info);
+                }
+                else
+                {
+                    await Dispatcher.InvokeAsync(() => UpdateUI(bmp, isVideo, info));
+                }
+
+                StopPolling();
+            }
+            catch (OperationCanceledException)
+            {
+                // Silently handle cancellation
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error checking thumbnail: {ex.Message}");
+                // Continue polling on error, but don't show error to user
+            }
+        }
+
+        private void UpdateUI(BitmapImage bmp, bool isVideo, string info)
+        {
+            if (!_isLoaded) return;
+
             PlaceholderText.Visibility = Visibility.Collapsed;
             LazyLoadedImage.Visibility = Visibility.Visible;
             LazyLoadedImage.Source = bmp;
             PlayOverlay.Visibility = isVideo ? Visibility.Visible : Visibility.Collapsed;
-
-            // Build info text
-            string info = BuildInfoText(path, meta);
             ImageNameText.Text = info;
 
             // Setup click handlers (remove any existing ones first)
@@ -140,28 +201,30 @@ namespace PhotoGallery.Controls
 
             LazyLoadedImage.MouseLeftButtonDown += ImageClickHandler;
             PlayOverlay.MouseLeftButtonDown += ImageClickHandler;
-
-            StopPolling();
         }
 
-        private BitmapImage? LoadThumbnailSafely(byte[] blob)
+        // FIXED: Made async to prevent UI blocking
+        private async Task<BitmapImage?> LoadThumbnailSafelyAsync(byte[] blob)
         {
-            try
+            return await Task.Run(() =>
             {
-                using var ms = new MemoryStream(blob);
-                var bmp = new BitmapImage();
-                bmp.BeginInit();
-                bmp.CacheOption = BitmapCacheOption.OnLoad;
-                bmp.StreamSource = ms;
-                bmp.EndInit();
-                bmp.Freeze();
-                return bmp;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Failed to load thumbnail: {ex.Message}");
-                return null;
-            }
+                try
+                {
+                    using var ms = new MemoryStream(blob);
+                    var bmp = new BitmapImage();
+                    bmp.BeginInit();
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.StreamSource = ms;
+                    bmp.EndInit();
+                    bmp.Freeze(); // Important: Freeze for cross-thread access
+                    return bmp;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Failed to load thumbnail: {ex.Message}");
+                    return null;
+                }
+            }).ConfigureAwait(false);
         }
 
         private string BuildInfoText(string path, PhotoRecord meta)

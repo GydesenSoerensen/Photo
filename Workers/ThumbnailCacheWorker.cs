@@ -82,9 +82,9 @@ namespace PhotoGallery.Workers
             var stopwatch = Stopwatch.StartNew();
             Log.Information("Starting metadata extraction for folder: {Folder}", folder);
 
-            // Get all supported media files (images + videos)
-            var imageFiles = Helper.GetImageFilesRecursive(folder);
-            var videoFiles = Helper.GetVideoFilesRecursive(folder);
+            // FIXED: Get files asynchronously to avoid blocking
+            var imageFiles = await Helper.GetImageFilesRecursiveAsync(folder).ConfigureAwait(false);
+            var videoFiles = await Helper.GetVideoFilesRecursiveAsync(folder).ConfigureAwait(false);
             var allFiles = imageFiles.Concat(videoFiles).ToList();
 
             if (allFiles.Count == 0)
@@ -97,7 +97,8 @@ namespace PhotoGallery.Workers
             Log.Information("Discovered {Count} media files. Starting extraction...", allFiles.Count);
             progress?.Report(new ScanProgress(0, allFiles.Count, "Starting scan..."));
 
-            var concurrency = maxConcurrency ?? Environment.ProcessorCount;
+            // FIXED: Reduced concurrency to prevent overwhelming system
+            var concurrency = Math.Min(maxConcurrency ?? Environment.ProcessorCount, 3);
             var semaphore = new SemaphoreSlim(concurrency, concurrency);
             var processedCount = 0;
             var errorCount = 0;
@@ -105,47 +106,63 @@ namespace PhotoGallery.Workers
 
             var results = new ConcurrentBag<ProcessResult>();
 
-            // Process files in parallel
-            var tasks = allFiles.Select(async filePath =>
+            // FIXED: Process files in smaller batches to reduce memory pressure
+            const int batchSize = 50;
+            var batches = allFiles.Chunk(batchSize);
+
+            foreach (var batch in batches)
             {
-                await semaphore.WaitAsync(cancellationToken);
-                try
+                if (cancellationToken.IsCancellationRequested)
+                    break;
+
+                // Process batch with limited concurrency
+                var tasks = batch.Select(async filePath =>
                 {
-                    var result = await ProcessFileAsync(filePath, cancellationToken);
-                    results.Add(result);
+                    await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        var result = await ProcessFileAsync(filePath, cancellationToken).ConfigureAwait(false);
+                        results.Add(result);
 
-                    var currentProcessed = Interlocked.Increment(ref processedCount);
-                    if (result.Success)
-                    {
-                        Log.Debug("✓ Metadata extracted: {Path}", filePath);
-                    }
-                    else if (result.Skipped)
-                    {
-                        Interlocked.Increment(ref skippedCount);
-                        Log.Debug("⊘ Skipped (already exists): {Path}", filePath);
-                    }
-                    else
-                    {
-                        Interlocked.Increment(ref errorCount);
-                        Log.Warning("✗ Failed: {Path} - {Error}", filePath, result.Error);
-                    }
+                        var currentProcessed = Interlocked.Increment(ref processedCount);
+                        if (result.Success)
+                        {
+                            Log.Debug("✓ Metadata extracted: {Path}", filePath);
+                        }
+                        else if (result.Skipped)
+                        {
+                            Interlocked.Increment(ref skippedCount);
+                            Log.Debug("⊘ Skipped (already exists): {Path}", filePath);
+                        }
+                        else
+                        {
+                            Interlocked.Increment(ref errorCount);
+                            Log.Warning("✗ Failed: {Path} - {Error}", filePath, result.Error);
+                        }
 
-                    // Report progress every 10 files or on last file
-                    if (currentProcessed % 10 == 0 || currentProcessed == allFiles.Count)
-                    {
-                        progress?.Report(new ScanProgress(
-                            currentProcessed,
-                            allFiles.Count,
-                            $"Processed {currentProcessed}/{allFiles.Count} files"));
+                        // Report progress every 5 files or on last file
+                        if (currentProcessed % 5 == 0 || currentProcessed == allFiles.Count)
+                        {
+                            progress?.Report(new ScanProgress(
+                                currentProcessed,
+                                allFiles.Count,
+                                $"Processed {currentProcessed}/{allFiles.Count} files"));
+                        }
                     }
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            });
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                });
 
-            await Task.WhenAll(tasks);
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+
+                // Small delay between batches to prevent overwhelming the system
+                if (cancellationToken.IsCancellationRequested)
+                    break;
+
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            }
 
             stopwatch.Stop();
             var successCount = results.Count(r => r.Success);

@@ -25,6 +25,7 @@ namespace PhotoGallery
         private const double CellMargin = 10;
         private string _currentFolderPath = string.Empty;
         private CancellationTokenSource? _scanCancellation;
+        private CancellationTokenSource? _metadataCancellation;
         private ExifInfo? _currentSelectedExif;
         private string _currentSelectedFile = string.Empty;
 
@@ -53,15 +54,15 @@ namespace PhotoGallery
             ColumnSelector.SelectionChanged += ColumnSelector_SelectionChanged;
         }
 
-        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             RefreshLazyImageWidths();
 
             // Load default folder if it exists
             if (Directory.Exists(_defaultTestPath))
             {
-                LoadImagesFromFolder(_defaultTestPath);
-                StartMetadataScan(_defaultTestPath);
+                await LoadImagesFromFolderAsync(_defaultTestPath);
+                _ = StartMetadataScanAsync(_defaultTestPath); // Fire and forget
             }
         }
 
@@ -70,15 +71,17 @@ namespace PhotoGallery
             _fetchWorker?.Dispose();
             _scanCancellation?.Cancel();
             _scanCancellation?.Dispose();
+            _metadataCancellation?.Cancel();
+            _metadataCancellation?.Dispose();
         }
 
-        #region Metadata Display
+        #region Metadata Display - FIXED: Non-blocking async operations
 
-        private void ThumbnailList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private async void ThumbnailList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (ThumbnailList.SelectedItem is ThumbnailItem selectedItem)
             {
-                LoadMetadataForFile(selectedItem.OriginalPath);
+                await LoadMetadataForFileAsync(selectedItem.OriginalPath);
             }
             else
             {
@@ -86,7 +89,7 @@ namespace PhotoGallery
             }
         }
 
-        private async void LoadMetadataForFile(string filePath)
+        private async Task LoadMetadataForFileAsync(string filePath)
         {
             if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
             {
@@ -96,18 +99,26 @@ namespace PhotoGallery
 
             try
             {
+                // Cancel any previous metadata loading
+                _metadataCancellation?.Cancel();
+                _metadataCancellation = new CancellationTokenSource();
+
                 _currentSelectedFile = filePath;
                 StatusText.Text = "Loading metadata...";
 
-                // Update selected file indicator
+                // Update selected file indicator immediately
                 SelectedFileText.Text = $"Selected: {Path.GetFileName(filePath)}";
 
-                // Load EXIF data asynchronously
-                _currentSelectedExif = await Task.Run(() => ExifReader.TryRead(filePath));
+                // FIXED: Load EXIF data asynchronously without blocking UI
+                _currentSelectedExif = await LoadExifDataAsync(filePath, _metadataCancellation.Token);
+
+                // Check if operation was cancelled
+                if (_metadataCancellation.Token.IsCancellationRequested)
+                    return;
 
                 if (_currentSelectedExif != null)
                 {
-                    DisplayMetadata(_currentSelectedExif, filePath);
+                    await DisplayMetadataAsync(_currentSelectedExif, filePath);
                     StatusText.Text = "Metadata loaded";
                 }
                 else
@@ -115,6 +126,10 @@ namespace PhotoGallery
                     DisplayFileInfoOnly(filePath);
                     StatusText.Text = "No metadata available";
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                // Silently handle cancellation
             }
             catch (Exception ex)
             {
@@ -124,54 +139,73 @@ namespace PhotoGallery
             }
         }
 
-        private void DisplayMetadata(ExifInfo exif, string filePath)
+        private async Task<ExifInfo?> LoadExifDataAsync(string filePath, CancellationToken cancellationToken)
+        {
+            return await Task.Run(async () =>
+            {
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return await ExifReader.ReadAsync(filePath).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Failed to read EXIF for: {Path}", filePath);
+                    return null;
+                }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task DisplayMetadataAsync(ExifInfo exif, string filePath)
         {
             try
             {
-                var fileInfo = new FileInfo(filePath);
+                // Get file info on background thread
+                var fileInfo = await Task.Run(() => new FileInfo(filePath)).ConfigureAwait(false);
 
-                // File Information
-                FilenameValue.Text = fileInfo.Name;
-                FileSizeValue.Text = FormatFileSize(fileInfo.Length);
-                FilePathValue.Text = filePath;
-                ModifiedDateValue.Text = fileInfo.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss");
+                // Update UI on UI thread
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    // File Information
+                    FilenameValue.Text = fileInfo.Name;
+                    FileSizeValue.Text = FormatFileSize(fileInfo.Length);
+                    FilePathValue.Text = filePath;
+                    ModifiedDateValue.Text = fileInfo.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss");
 
-                // Media Information
-                DateTakenValue.Text = exif.CreationDateTime.ToString("yyyy-MM-dd HH:mm:ss");
-                DateSourceValue.Text = exif.CreationDateSource.ToString();
-                OrientationValue.Text = FormatOrientation(exif.Orientation);
+                    // Media Information
+                    DateTakenValue.Text = exif.CreationDateTime.ToString("yyyy-MM-dd HH:mm:ss");
+                    DateSourceValue.Text = exif.CreationDateSource.ToString();
+                    OrientationValue.Text = FormatOrientation(exif.Orientation);
 
-                // Camera Information
-                CameraMakeValue.Text = string.IsNullOrEmpty(exif.Make) ? "Unknown" : exif.Make;
-                CameraModelValue.Text = string.IsNullOrEmpty(exif.Model) ? "Unknown" : exif.Model;
+                    // Camera Information
+                    CameraMakeValue.Text = string.IsNullOrEmpty(exif.Make) ? "Unknown" : exif.Make;
+                    CameraModelValue.Text = string.IsNullOrEmpty(exif.Model) ? "Unknown" : exif.Model;
 
-                // Camera Settings from EXIF tags
-                DisplayCameraSettings(exif);
+                    // Camera Settings from EXIF tags
+                    DisplayCameraSettings(exif);
 
-                // GPS Information
-                DisplayGPSInformation(exif);
+                    // GPS Information
+                    DisplayGPSInformation(exif);
 
-                // Tags and Keywords
-                KeywordsValue.Text = exif.Keywords?.Length > 0 ? string.Join(", ", exif.Keywords) : "None";
+                    // Tags and Keywords
+                    KeywordsValue.Text = exif.Keywords?.Length > 0 ? string.Join(", ", exif.Keywords) : "None";
 
-                // Get tags from database
-                var photoMeta = _repo.Get(filePath);
-                TagsValue.Text = !string.IsNullOrEmpty(photoMeta?.TagsCsv) ? photoMeta.TagsCsv : "None";
+                    // Additional Information
+                    SoftwareValue.Text = exif.TryGet("Software") ?? "Unknown";
+                    ColorSpaceValue.Text = FormatColorSpace(exif.TryGet("ColorSpace"));
+                    CopyrightValue.Text = exif.TryGet("Copyright") ?? "None";
 
-                // Additional Information
-                SoftwareValue.Text = exif.TryGet("Software") ?? "Unknown";
-                ColorSpaceValue.Text = FormatColorSpace(exif.TryGet("ColorSpace"));
-                CopyrightValue.Text = exif.TryGet("Copyright") ?? "None";
+                    // Enable action buttons
+                    OpenFileButton.IsEnabled = true;
+                    ShowInExplorerButton.IsEnabled = true;
+                });
 
-                // Try to get image dimensions
-                DisplayImageDimensions(exif, filePath);
-
-                // Raw EXIF data
-                DisplayRawExifData(exif);
-
-                // Enable action buttons
-                OpenFileButton.IsEnabled = true;
-                ShowInExplorerButton.IsEnabled = true;
+                // Load database tags and dimensions on background thread
+                await LoadAdditionalMetadataAsync(filePath, exif);
             }
             catch (Exception ex)
             {
@@ -180,6 +214,78 @@ namespace PhotoGallery
             }
         }
 
+        private async Task LoadAdditionalMetadataAsync(string filePath, ExifInfo exif)
+        {
+            try
+            {
+                // Get database tags on background thread
+                var photoMeta = await Task.Run(() => _repo.Get(filePath)).ConfigureAwait(false);
+
+                // Get image dimensions on background thread
+                var dimensions = await GetImageDimensionsAsync(exif, filePath);
+
+                // Get raw EXIF data
+                var rawExifData = GetRawExifData(exif);
+
+                // Update UI
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    TagsValue.Text = !string.IsNullOrEmpty(photoMeta?.TagsCsv) ? photoMeta.TagsCsv : "None";
+                    DimensionsValue.Text = dimensions;
+                    RawExifValue.Text = rawExifData;
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to load additional metadata for: {Path}", filePath);
+            }
+        }
+
+        private async Task<string> GetImageDimensionsAsync(ExifInfo exif, string filePath)
+        {
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    // Try to get dimensions from EXIF first
+                    var width = exif.TryGetInt("PixelXDimension") ?? exif.TryGetInt("ImageWidth");
+                    var height = exif.TryGetInt("PixelYDimension") ?? exif.TryGetInt("ImageHeight");
+
+                    if (width.HasValue && height.HasValue)
+                    {
+                        return $"{width}×{height} pixels";
+                    }
+                    else if (Helper.KnownVideoExtensions.Contains(Path.GetExtension(filePath)))
+                    {
+                        return "Video file";
+                    }
+                    else
+                    {
+                        // Fallback: load image to get dimensions (on background thread)
+                        using var img = System.Drawing.Image.FromFile(filePath);
+                        return $"{img.Width}×{img.Height} pixels";
+                    }
+                }
+                catch
+                {
+                    return "Unknown";
+                }
+            }).ConfigureAwait(false);
+        }
+
+        private string GetRawExifData(ExifInfo exif)
+        {
+            var rawData = new System.Text.StringBuilder();
+
+            foreach (var kvp in exif.AllTags.OrderBy(x => x.Key))
+            {
+                rawData.AppendLine($"{kvp.Key}: {kvp.Value}");
+            }
+
+            return rawData.Length > 0 ? rawData.ToString() : "No EXIF data available";
+        }
+
+        // Rest of display methods remain the same but are now called from async context
         private void DisplayCameraSettings(ExifInfo exif)
         {
             // ISO
@@ -236,47 +342,6 @@ namespace PhotoGallery
                 GPSValue.Text = "No GPS data";
                 OpenMapButton.Visibility = Visibility.Collapsed;
             }
-        }
-
-        private void DisplayImageDimensions(ExifInfo exif, string filePath)
-        {
-            try
-            {
-                // Try to get dimensions from EXIF first
-                var width = exif.TryGetInt("PixelXDimension") ?? exif.TryGetInt("ImageWidth");
-                var height = exif.TryGetInt("PixelYDimension") ?? exif.TryGetInt("ImageHeight");
-
-                if (width.HasValue && height.HasValue)
-                {
-                    DimensionsValue.Text = $"{width}×{height} pixels";
-                }
-                else if (Helper.KnownVideoExtensions.Contains(Path.GetExtension(filePath)))
-                {
-                    DimensionsValue.Text = "Video file";
-                }
-                else
-                {
-                    // Fallback: load image to get dimensions
-                    using var img = System.Drawing.Image.FromFile(filePath);
-                    DimensionsValue.Text = $"{img.Width}×{img.Height} pixels";
-                }
-            }
-            catch
-            {
-                DimensionsValue.Text = "Unknown";
-            }
-        }
-
-        private void DisplayRawExifData(ExifInfo exif)
-        {
-            var rawData = new System.Text.StringBuilder();
-
-            foreach (var kvp in exif.AllTags.OrderBy(x => x.Key))
-            {
-                rawData.AppendLine($"{kvp.Key}: {kvp.Value}");
-            }
-
-            RawExifValue.Text = rawData.Length > 0 ? rawData.ToString() : "No EXIF data available";
         }
 
         private void DisplayFileInfoOnly(string filePath)
@@ -365,7 +430,117 @@ namespace PhotoGallery
 
         #endregion
 
-        #region Formatting Helpers
+        #region Folder Operations - FIXED: Non-blocking async operations
+
+        private async Task StartMetadataScanAsync(string folder)
+        {
+            if (MetadataScanner.IsScanning)
+            {
+                Log.Information("Metadata scan already in progress, skipping new scan");
+                return;
+            }
+
+            _scanCancellation?.Cancel();
+            _scanCancellation = new CancellationTokenSource();
+
+            // Create progress handler
+            var progress = new Progress<ScanProgress>(scanProgress =>
+            {
+                // Ensure UI updates happen on UI thread
+                if (Dispatcher.CheckAccess())
+                {
+                    UpdateScanProgress(scanProgress);
+                }
+                else
+                {
+                    Dispatcher.InvokeAsync(() => UpdateScanProgress(scanProgress));
+                }
+            });
+
+            // Run scan in background
+            try
+            {
+                await MetadataScanner.RunParallelMetadataExtractionAsync(
+                    folder,
+                    maxConcurrency: Math.Min(Environment.ProcessorCount, 4), // Limit concurrency
+                    progress: progress,
+                    cancellationToken: _scanCancellation.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Information("Metadata scan was cancelled");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Metadata scan failed for folder: {Folder}", folder);
+                await Dispatcher.InvokeAsync(() =>
+                    MessageBox.Show(this, $"Metadata scan failed:\n{ex.Message}", "Error",
+                        MessageBoxButton.OK, MessageBoxImage.Error));
+            }
+            finally
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    Title = "Photo Gallery";
+                    StatusText.Text = "Ready";
+                });
+            }
+        }
+
+        private void UpdateScanProgress(ScanProgress scanProgress)
+        {
+            StatusText.Text = scanProgress.IsComplete
+                ? "Scan complete"
+                : $"Scanning: {scanProgress.ProgressPercentage:F0}% ({scanProgress.ProcessedCount}/{scanProgress.TotalCount})";
+
+            Title = scanProgress.IsComplete
+                ? "Photo Gallery"
+                : $"Photo Gallery - Scanning: {scanProgress.ProgressPercentage:F0}%";
+        }
+
+        private async void FolderTree_SelectedItemChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is TreeViewItem selectedItem && selectedItem.Tag is string path)
+            {
+                await LoadImagesFromFolderAsync(path);
+                _ = StartMetadataScanAsync(path); // Fire and forget
+            }
+        }
+
+        private async Task LoadImagesFromFolderAsync(string folderPath)
+        {
+            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                return;
+
+            _currentFolderPath = folderPath;
+            Log.Information("Loading images from folder: {Folder}", folderPath);
+
+            try
+            {
+                // Clear selection and metadata when changing folders
+                ThumbnailList.SelectedItem = null;
+                ClearMetadataDisplay();
+
+                // Stop current fetch worker
+                _fetchWorker?.Stop();
+
+                // Start new worker for this folder
+                _fetchWorker = new ThumbnailFetchWorker(_repo, Dispatcher, Thumbnails);
+                _fetchWorker.Start(folderPath);
+
+                StatusText.Text = $"Loading folder: {Path.GetFileName(folderPath)}";
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to load images from folder: {Folder}", folderPath);
+                MessageBox.Show(this, $"Failed to load folder:\n{ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        #endregion
+
+        #region Formatting Helpers (unchanged)
 
         private static string FormatFileSize(long bytes)
         {
@@ -429,7 +604,7 @@ namespace PhotoGallery
 
         #endregion
 
-        #region Button Event Handlers
+        #region Button Event Handlers (unchanged)
 
         private void OpenFileButton_Click(object sender, RoutedEventArgs e)
         {
@@ -496,7 +671,7 @@ namespace PhotoGallery
 
         #endregion
 
-        #region Existing Methods (preserved)
+        #region Existing Methods (preserved and some made async)
 
         private void InitializeFolderTree()
         {
@@ -526,74 +701,6 @@ namespace PhotoGallery
             catch (Exception ex)
             {
                 Log.Error(ex, "Failed to initialize folder tree");
-            }
-        }
-
-        private void StartMetadataScan(string folder)
-        {
-            if (MetadataScanner.IsScanning)
-            {
-                Log.Information("Metadata scan already in progress, skipping new scan");
-                return;
-            }
-
-            _scanCancellation?.Cancel();
-            _scanCancellation = new CancellationTokenSource();
-
-            // Create progress handler
-            var progress = new Progress<ScanProgress>(scanProgress =>
-            {
-                Dispatcher.Invoke(() =>
-                {
-                    StatusText.Text = scanProgress.IsComplete
-                        ? "Scan complete"
-                        : $"Scanning: {scanProgress.ProgressPercentage:F0}% ({scanProgress.ProcessedCount}/{scanProgress.TotalCount})";
-
-                    Title = scanProgress.IsComplete
-                        ? "Photo Gallery"
-                        : $"Photo Gallery - Scanning: {scanProgress.ProgressPercentage:F0}%";
-                });
-            });
-
-            // Run scan in background
-            Task.Run(async () =>
-            {
-                try
-                {
-                    await MetadataScanner.RunParallelMetadataExtractionAsync(
-                        folder,
-                        maxConcurrency: Environment.ProcessorCount,
-                        progress: progress,
-                        cancellationToken: _scanCancellation.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    Log.Information("Metadata scan was cancelled");
-                }
-                catch (Exception ex)
-                {
-                    Log.Error(ex, "Metadata scan failed for folder: {Folder}", folder);
-                    Dispatcher.Invoke(() =>
-                        MessageBox.Show(this, $"Metadata scan failed:\n{ex.Message}", "Error",
-                            MessageBoxButton.OK, MessageBoxImage.Error));
-                }
-                finally
-                {
-                    Dispatcher.Invoke(() =>
-                    {
-                        Title = "Photo Gallery";
-                        StatusText.Text = "Ready";
-                    });
-                }
-            }, _scanCancellation.Token);
-        }
-
-        private void FolderTree_SelectedItemChanged(object sender, RoutedEventArgs e)
-        {
-            if (sender is TreeViewItem selectedItem && selectedItem.Tag is string path)
-            {
-                LoadImagesFromFolder(path);
-                StartMetadataScan(path);
             }
         }
 
@@ -637,46 +744,15 @@ namespace PhotoGallery
             }
         }
 
-        private void LoadImagesFromFolder(string folderPath)
-        {
-            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
-                return;
-
-            _currentFolderPath = folderPath;
-            Log.Information("Loading images from folder: {Folder}", folderPath);
-
-            try
-            {
-                // Clear selection and metadata when changing folders
-                ThumbnailList.SelectedItem = null;
-                ClearMetadataDisplay();
-
-                // Stop current fetch worker
-                _fetchWorker?.Stop();
-
-                // Start new worker for this folder
-                _fetchWorker = new ThumbnailFetchWorker(_repo, Dispatcher, Thumbnails);
-                _fetchWorker.Start(folderPath);
-
-                StatusText.Text = $"Loading folder: {Path.GetFileName(folderPath)}";
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Failed to load images from folder: {Folder}", folderPath);
-                MessageBox.Show(this, $"Failed to load folder:\n{ex.Message}", "Error",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-        }
-
-        private void ReloadThumbnails_Click(object sender, RoutedEventArgs e)
+        private async void ReloadThumbnails_Click(object sender, RoutedEventArgs e)
         {
             if (!string.IsNullOrEmpty(_currentFolderPath))
             {
-                LoadImagesFromFolder(_currentFolderPath);
+                await LoadImagesFromFolderAsync(_currentFolderPath);
             }
             else if (Directory.Exists(_defaultTestPath))
             {
-                LoadImagesFromFolder(_defaultTestPath);
+                await LoadImagesFromFolderAsync(_defaultTestPath);
             }
             else
             {

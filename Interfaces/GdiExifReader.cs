@@ -41,7 +41,9 @@ namespace PhotoGallery.Imaging
         {
             try
             {
-                return await ExifReader.ReadAsync(path);
+                // FIXED: Run the synchronous operation on a background thread
+                // avoiding the potential deadlock issues with nested async calls
+                return await Task.Run(() => ExifReader.Read(path)).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
