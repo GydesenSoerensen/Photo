@@ -3,13 +3,36 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:PhotoGallery.Controls"
         xmlns:model="clr-namespace:PhotoGallery.Model"
-        Title="Photo Gallery" Height="728" Width="1064"
-        MinWidth="600" MinHeight="400" >
+        Title="Photo Gallery" Height="728" Width="1400"
+        MinWidth="800" MinHeight="600" >
+
+    <Window.Resources>
+        <!-- Style for metadata labels -->
+        <Style x:Key="MetadataLabelStyle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,8,0,2"/>
+            <Setter Property="Foreground" Value="#333"/>
+        </Style>
+
+        <!-- Style for metadata values -->
+        <Style x:Key="MetadataValueStyle" TargetType="TextBlock">
+            <Setter Property="Margin" Value="0,0,0,4"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Foreground" Value="#666"/>
+        </Style>
+
+        <!-- Style for section headers -->
+        <Style x:Key="SectionHeaderStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Margin" Value="0,12,0,8"/>
+            <Setter Property="Foreground" Value="#2C3E50"/>
+        </Style>
+    </Window.Resources>
 
     <DockPanel>
-
         <!-- Top toolbar -->
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8" Background="#F8F9FA">
             <TextBlock Text="Columns:" VerticalAlignment="Center" Margin="0 0 6 0"/>
             <ComboBox x:Name="ColumnSelector" Width="70" SelectedIndex="3">
                 <ComboBoxItem Content="2"/>
@@ -18,48 +41,212 @@
                 <ComboBoxItem Content="5"/>
                 <ComboBoxItem Content="6"/>
             </ComboBox>
-        </StackPanel>
-        <!-- Toolbar -->
-        <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Background="#EEE" >
+
+            <Separator Margin="15,0" Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}"/>
+
             <Button Content="Reload Thumbnails" Width="150" Margin="5" Click="ReloadThumbnails_Click"/>
-            
-               
+
+            <Separator Margin="15,0" Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}"/>
+
+            <!-- Status info -->
+            <TextBlock x:Name="StatusText" VerticalAlignment="Center" Margin="10,0" 
+                       Text="Ready" Foreground="#666"/>
         </StackPanel>
-        <Border DockPanel.Dock="Left" Width="250" Background="#EEE" Padding="5">
-            <StackPanel>
-                <TextBlock Text="Folders" FontWeight="Bold" Margin="0,0,0,5" />
-                <TreeView x:Name="FolderTree"  />
-            </StackPanel>
-        </Border>
-        <!-- Thumbnail grid -->
-        <ListBox x:Name="ThumbnailList"
-                 ItemsSource="{Binding Thumbnails}"
-                 BorderThickness="0"
-                 ScrollViewer.CanContentScroll="True"
-                 Background="Transparent"
-                 VirtualizingPanel.IsVirtualizing="True"
-                 VirtualizingPanel.VirtualizationMode="Recycling">
 
-            <!-- Stretch each item to fill its cell -->
-            <ListBox.ItemContainerStyle>
-                <Style TargetType="ListBoxItem">
-                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                </Style>
-            </ListBox.ItemContainerStyle>
+        <!-- Main content area with 3-column grid -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <!-- Folder tree -->
+                <ColumnDefinition Width="250" MinWidth="200"/>
+                <ColumnDefinition Width="5"/>
+                <!-- Thumbnail grid -->
+                <ColumnDefinition Width="*" MinWidth="400"/>
+                <ColumnDefinition Width="5"/>
+                <!-- Metadata sidebar -->
+                <ColumnDefinition Width="300" MinWidth="250"/>
+            </Grid.ColumnDefinitions>
 
-            <!-- Use a UniformGrid as the panel; no x:Name here -->
-            <ListBox.ItemsPanel>
-                <ItemsPanelTemplate>
-                    <UniformGrid Columns="5"/>
-                </ItemsPanelTemplate>
-            </ListBox.ItemsPanel>
+            <!-- Left sidebar - Folder tree -->
+            <Border Grid.Column="0" Background="#F8F9FA" Padding="5" BorderBrush="#DDD" BorderThickness="0,0,1,0">
+                <DockPanel>
+                    <TextBlock Text="Folders" FontWeight="Bold" Margin="0,0,0,5" DockPanel.Dock="Top"/>
+                    <TreeView x:Name="FolderTree" Background="Transparent" BorderThickness="0"/>
+                </DockPanel>
+            </Border>
 
-            <!-- The item template -->
-            <ListBox.ItemTemplate>
-                <DataTemplate DataType="{x:Type model:ThumbnailItem}">
-                    <controls:LazyImage FilePath="{Binding OriginalPath}" Margin="2"/>
-                </DataTemplate>
-            </ListBox.ItemTemplate>
-        </ListBox>
+            <!-- Splitter 1 -->
+            <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#DDD"/>
+
+            <!-- Center - Thumbnail grid -->
+            <ListBox Grid.Column="2" x:Name="ThumbnailList"
+                     ItemsSource="{Binding Thumbnails}"
+                     BorderThickness="0"
+                     ScrollViewer.CanContentScroll="True"
+                     Background="White"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling"
+                     SelectionChanged="ThumbnailList_SelectionChanged">
+
+                <!-- Stretch each item to fill its cell -->
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        <Setter Property="Padding" Value="2"/>
+                        <Setter Property="Margin" Value="1"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+
+                <!-- Use a UniformGrid as the panel -->
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Columns="5"/>
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+
+                <!-- The item template -->
+                <ListBox.ItemTemplate>
+                    <DataTemplate DataType="{x:Type model:ThumbnailItem}">
+                        <controls:LazyImage FilePath="{Binding OriginalPath}" Margin="2"/>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <!-- Splitter 2 -->
+            <GridSplitter Grid.Column="3" HorizontalAlignment="Stretch" Background="#DDD"/>
+
+            <!-- Right sidebar - Metadata panel -->
+            <Border Grid.Column="4" Background="#F8F9FA" Padding="10" BorderBrush="#DDD" BorderThickness="1,0,0,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="MetadataPanel">
+                        <!-- Header -->
+                        <TextBlock Text="Image Information" 
+                                   FontSize="16" FontWeight="Bold" 
+                                   Margin="0,0,0,15"
+                                   Foreground="#2C3E50"/>
+
+                        <!-- Selected file indicator -->
+                        <TextBlock x:Name="SelectedFileText" 
+                                   Text="No image selected"
+                                   FontStyle="Italic"
+                                   Foreground="#999"
+                                   Margin="0,0,0,15"
+                                   TextWrapping="Wrap"/>
+
+                        <!-- File Information Section -->
+                        <TextBlock Text="File Information" Style="{StaticResource SectionHeaderStyle}"/>
+
+                        <TextBlock Text="Filename:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="FilenameValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="File Size:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="FileSizeValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="File Path:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="FilePathValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Modified Date:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="ModifiedDateValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <!-- Photo/Video Information Section -->
+                        <TextBlock Text="Media Information" Style="{StaticResource SectionHeaderStyle}"/>
+
+                        <TextBlock Text="Date Taken:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="DateTakenValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Date Source:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="DateSourceValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Dimensions:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="DimensionsValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Orientation:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="OrientationValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <!-- Camera Information Section -->
+                        <TextBlock Text="Camera Information" Style="{StaticResource SectionHeaderStyle}"/>
+
+                        <TextBlock Text="Camera Make:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="CameraMakeValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Camera Model:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="CameraModelValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Lens:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="LensValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <!-- Camera Settings Section -->
+                        <TextBlock Text="Camera Settings" Style="{StaticResource SectionHeaderStyle}"/>
+
+                        <TextBlock Text="ISO:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="ISOValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Aperture:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="ApertureValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Shutter Speed:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="ShutterSpeedValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Focal Length:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="FocalLengthValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Flash:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="FlashValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <!-- GPS Information Section -->
+                        <TextBlock Text="Location Information" Style="{StaticResource SectionHeaderStyle}"/>
+
+                        <TextBlock Text="GPS Coordinates:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="GPSValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <Button x:Name="OpenMapButton" Content="View on Map" 
+                                Margin="0,5,0,0" Padding="8,4"
+                                Visibility="Collapsed"
+                                Click="OpenMapButton_Click"/>
+
+                        <!-- Tags and Keywords Section -->
+                        <TextBlock Text="Tags &amp; Keywords" Style="{StaticResource SectionHeaderStyle}"/>
+
+                        <TextBlock Text="Keywords:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="KeywordsValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Tags:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="TagsValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <!-- Additional EXIF Data Section -->
+                        <TextBlock Text="Additional Information" Style="{StaticResource SectionHeaderStyle}"/>
+
+                        <TextBlock Text="Software:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="SoftwareValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Color Space:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="ColorSpaceValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <TextBlock Text="Copyright:" Style="{StaticResource MetadataLabelStyle}"/>
+                        <TextBlock x:Name="CopyrightValue" Style="{StaticResource MetadataValueStyle}"/>
+
+                        <!-- Action Buttons -->
+                        <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
+                            <Button x:Name="OpenFileButton" Content="Open File" 
+                                    Margin="0,0,10,0" Padding="10,5"
+                                    Click="OpenFileButton_Click"/>
+                            <Button x:Name="ShowInExplorerButton" Content="Show in Explorer" 
+                                    Padding="10,5"
+                                    Click="ShowInExplorerButton_Click"/>
+                        </StackPanel>
+
+                        <!-- Raw EXIF Data Expander -->
+                        <Expander Header="Raw EXIF Data" Margin="0,20,0,0" IsExpanded="False">
+                            <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+                                <TextBlock x:Name="RawExifValue" 
+                                          FontFamily="Consolas" 
+                                          FontSize="10"
+                                          Foreground="#555"
+                                          TextWrapping="Wrap"/>
+                            </ScrollViewer>
+                        </Expander>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
     </DockPanel>
 </Window>
