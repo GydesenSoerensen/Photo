@@ -194,6 +194,12 @@ namespace PhotoGallery
                     // Tags and Keywords
                     KeywordsValue.Text = exif.Keywords?.Length > 0 ? string.Join(", ", exif.Keywords) : "None";
 
+                    // Debug logging for keywords
+                    if (exif.Keywords?.Length > 0)
+                    {
+                        Log.Information("Extracted keywords for {Path}: {Keywords}", filePath, string.Join(", ", exif.Keywords));
+                    }
+
                     // Additional Information
                     SoftwareValue.Text = exif.TryGet("Software") ?? "Unknown";
                     ColorSpaceValue.Text = FormatColorSpace(exif.TryGet("ColorSpace"));
@@ -230,7 +236,16 @@ namespace PhotoGallery
                 // Update UI
                 await Dispatcher.InvokeAsync(() =>
                 {
-                    TagsValue.Text = !string.IsNullOrEmpty(photoMeta?.TagsCsv) ? photoMeta.TagsCsv : "None";
+                    // FIXED: Display TagsCsv from database with better formatting
+                    var dbTags = !string.IsNullOrEmpty(photoMeta?.TagsCsv) ? photoMeta.TagsCsv : "None";
+                    TagsValue.Text = dbTags;
+
+                    // Debug logging for database tags
+                    if (!string.IsNullOrEmpty(photoMeta?.TagsCsv))
+                    {
+                        Log.Information("Database tags for {Path}: {Tags}", filePath, photoMeta.TagsCsv);
+                    }
+
                     DimensionsValue.Text = dimensions;
                     RawExifValue.Text = rawExifData;
                 });

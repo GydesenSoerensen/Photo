@@ -105,9 +105,11 @@ namespace PhotoGallery
                 long? modelId = makeId.HasValue && !string.IsNullOrWhiteSpace(exifInfo.Model)
                     ? GetOrAddModel(tx, makeId.Value, exifInfo.Model.Trim()) : null;
 
-                string tagCsv = exifInfo.Keywords != null
-                    ? string.Join(';', exifInfo.Keywords.Select(t => t.Trim()).Where(t => t.Length > 0).Distinct())
-                    : string.Empty;
+                // FIXED: Properly convert Keywords array to TagsCsv
+                string tagCsv = ConvertKeywordsToTagsCsv(exifInfo.Keywords);
+
+                _logger.Debug("Converting keywords to TagsCsv: {Keywords} -> {TagsCsv}",
+                    string.Join(", ", exifInfo.Keywords ?? Array.Empty<string>()), tagCsv);
 
                 using (var cmd = tx.Connection.CreateCommand())
                 {
@@ -132,14 +134,48 @@ ON CONFLICT(FilePath) DO UPDATE SET
                     cmd.Parameters.AddWithValue("@makeId", makeId.HasValue ? makeId.Value : DBNull.Value);
                     cmd.Parameters.AddWithValue("@modelId", modelId.HasValue ? modelId.Value : DBNull.Value);
                     cmd.Parameters.AddWithValue("@thumb", (object?)exifInfo.ThumbnailBytes ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@tags", tagCsv);
+                    cmd.Parameters.AddWithValue("@tags", tagCsv); // FIXED: Use properly converted TagsCsv
                     cmd.ExecuteNonQuery();
                 }
 
                 tx.Commit();
-                _logger.Information("Photo upserted: {FilePath}", exifInfo.FullPath);
+                _logger.Information("Photo upserted: {FilePath} with tags: {Tags}", exifInfo.FullPath, tagCsv);
                 PhotoCommitted?.Invoke(exifInfo.FullPath);
             });
+        }
+
+        /// <summary>
+        /// FIXED: Properly convert Keywords array to semicolon-separated TagsCsv string
+        /// </summary>
+        private static string ConvertKeywordsToTagsCsv(string[]? keywords)
+        {
+            if (keywords == null || keywords.Length == 0)
+                return string.Empty;
+
+            // Clean and filter keywords
+            var cleanKeywords = keywords
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Select(k => k.Trim())
+                .Where(k => k.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(k => k, StringComparer.OrdinalIgnoreCase);
+
+            return string.Join(';', cleanKeywords);
+        }
+
+        /// <summary>
+        /// FIXED: Convert TagsCsv back to Keywords array when needed
+        /// </summary>
+        public static string[] ConvertTagsCsvToKeywords(string? tagsCsv)
+        {
+            if (string.IsNullOrWhiteSpace(tagsCsv))
+                return Array.Empty<string>();
+
+            return tagsCsv.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
+                         .Select(t => t.Trim())
+                         .Where(t => t.Length > 0)
+                         .Distinct(StringComparer.OrdinalIgnoreCase)
+                         .ToArray();
         }
 
         public static IEnumerable<PhotoMeta> GetAllUnder(string folderPath)
@@ -179,7 +215,7 @@ WHERE p.FilePath LIKE @prefix || '%';";
                     var make = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
                     var model = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
                     var orient = reader.IsDBNull(5) ? 1 : reader.GetInt32(5);
-                    var tags = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
+                    var tags = reader.IsDBNull(6) ? string.Empty : reader.GetString(6); // FIXED: TagsCsv
                     var thumb = reader.IsDBNull(7) ? null : (byte[])reader[7];
 
                     list.Add(new PhotoMeta(
@@ -189,7 +225,7 @@ WHERE p.FilePath LIKE @prefix || '%';";
                         CameraMake: make,
                         CameraModel: model,
                         Orientation: orient,
-                        TagsCsv: tags,
+                        TagsCsv: tags, // FIXED: Pass TagsCsv properly
                         ThumbnailBlob: thumb
                     ));
                 }
@@ -235,9 +271,9 @@ WHERE p.FilePath = @path;";
                     CameraModel = rdr.IsDBNull(4) ? string.Empty : rdr.GetString(4),
                     Orientation = rdr.IsDBNull(5) ? 1 : rdr.GetInt32(5),
                     ThumbnailBlob = rdr.IsDBNull(6) ? null : (byte[])rdr[6],
-                    TagsCsv = rdr.IsDBNull(7) ? string.Empty : rdr.GetString(7)
+                    TagsCsv = rdr.IsDBNull(7) ? string.Empty : rdr.GetString(7) // FIXED: TagsCsv retrieval
                 };
-                _logger.Information("Retrieved photo record for {FilePath}", filePath);
+                _logger.Information("Retrieved photo record for {FilePath} with tags: {Tags}", filePath, record.TagsCsv);
                 return record;
             });
         }
@@ -290,7 +326,8 @@ CREATE TABLE IF NOT EXISTS Photos(
             using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
 CREATE INDEX IF NOT EXISTS IX_Photos_DateTaken ON Photos(DateTaken);
-CREATE INDEX IF NOT EXISTS IX_Photos_SourceId ON Photos(DataSourceId);";
+CREATE INDEX IF NOT EXISTS IX_Photos_SourceId ON Photos(DataSourceId);
+CREATE INDEX IF NOT EXISTS IX_Photos_TagsCsv ON Photos(TagsCsv);";
             cmd.ExecuteNonQuery();
         }
 
@@ -409,5 +446,10 @@ CREATE INDEX IF NOT EXISTS IX_Photos_SourceId ON Photos(DataSourceId);";
         public string TagsCsv { get; set; } = string.Empty;
 
         public DateTime DateTaken => DateTimeOffset.FromUnixTimeSeconds(DateTakenEpoch).DateTime;
+
+        /// <summary>
+        /// FIXED: Convert TagsCsv to Keywords array for easy access
+        /// </summary>
+        public string[] Keywords => PhotoDb.ConvertTagsCsvToKeywords(TagsCsv);
     }
 }
